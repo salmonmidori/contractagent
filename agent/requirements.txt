@@ -1,0 +1,17 @@
+jupyter
+ipywidgets
+langchain-core
+langchain-google-genai
+langchain-openai
+llama-index-llms-openai
+llama-index-embeddings-openai
+llama-index-vector-stores-chroma
+llama-index
+chromadb
+docx2txt
+pypdf
+pandas
+numpy
+tqdm
+requests
+beautifulsoup4

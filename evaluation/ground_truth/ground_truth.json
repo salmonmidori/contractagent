@@ -1,0 +1,295 @@
+{
+  "version": "1.0",
+  "created": "2026-02-20",
+  "description": "Ground truth for evaluating AI lease agreement analysis output.",
+  "sources": {
+    "pdfs": [
+      "10-deadly-sins-of-a-lease.pdf",
+      "How to Identify and Fix Illegal Lease Clauses.pdf"
+    ],
+    "web": [
+      "HUD – Tenant Rights"
+    ]
+  },
+  "label_schema": {
+    "illegal": "Clearly violates applicable law; unenforceable",
+    "unfair_but_legal": "Legal but significantly disadvantages the tenant",
+    "needs_negotiation": "Standard but tenant should push back or clarify",
+    "fair": "Reasonable and balanced; acceptable as-is"
+  },
+  "severity_scale": "1 (minor inconvenience) to 10 (severe legal/financial risk to tenant)",
+  "clause_types": [
+    {
+      "clause_category": "habitability_waiver",
+      "name": "Waiver of Habitability Rights",
+      "expected_label": "illegal",
+      "severity_range": [
+        10,
+        10
+      ],
+      "key_indicators": [
+        "tenant waives right to repairs",
+        "unit rented as-is",
+        "landlord not responsible for maintenance"
+      ],
+      "what_to_flag": "Identify any clause that attempts to waive the tenant's right to a habitable living condition.",
+      "description": "This clause is illegal as it undermines the tenant's right to live in a safe and habitable unit."
+    },
+    {
+      "clause_category": "eviction_without_due_process",
+      "name": "Eviction Without Judicial Process",
+      "expected_label": "illegal",
+      "severity_range": [
+        9,
+        10
+      ],
+      "key_indicators": [
+        "landlord can evict without court",
+        "immediate lockout",
+        "no legal proceedings required"
+      ],
+      "what_to_flag": "Flag any clause that allows eviction without following judicial procedures.",
+      "description": "This clause is illegal as it denies tenants their right to due process."
+    },
+    {
+      "clause_category": "acceleration_of_rent",
+      "name": "Acceleration of Rent Payments",
+      "expected_label": "illegal",
+      "severity_range": [
+        8,
+        9
+      ],
+      "key_indicators": [
+        "full rent due upon default",
+        "immediate payment required",
+        "waives landlord's duty to mitigate damages"
+      ],
+      "what_to_flag": "Identify clauses that require full rent payment immediately upon tenant default.",
+      "description": "This clause is illegal as it violates the landlord's obligation to mitigate damages."
+    },
+    {
+      "clause_category": "attorney_fee_shift",
+      "name": "Tenant Pays Landlord's Attorney Fees",
+      "expected_label": "illegal",
+      "severity_range": [
+        7,
+        8
+      ],
+      "key_indicators": [
+        "tenant responsible for landlord's legal costs",
+        "attorney fees shifted to tenant",
+        "tenant waives right to recover costs"
+      ],
+      "what_to_flag": "Flag any clause that requires tenants to pay the landlord's attorney fees.",
+      "description": "This clause is illegal as it unfairly shifts legal costs to the tenant."
+    },
+    {
+      "clause_category": "confession_of_judgment",
+      "name": "Confession of Judgment Clause",
+      "expected_label": "illegal",
+      "severity_range": [
+        9,
+        10
+      ],
+      "key_indicators": [
+        "landlord can confess judgment",
+        "tenant's guilt admitted without defense",
+        "no chance to contest"
+      ],
+      "what_to_flag": "Identify clauses that allow landlords to confess judgment against tenants.",
+      "description": "This clause is illegal as it denies tenants the right to defend themselves in court."
+    },
+    {
+      "clause_category": "liability_exemption",
+      "name": "Landlord Liability Exemption",
+      "expected_label": "illegal",
+      "severity_range": [
+        8,
+        9
+      ],
+      "key_indicators": [
+        "landlord not liable for damages",
+        "exempts landlord from negligence",
+        "no responsibility for injuries"
+      ],
+      "what_to_flag": "Flag any clause that exempts the landlord from liability for negligence.",
+      "description": "This clause is illegal as it undermines tenant protections against landlord negligence."
+    },
+    {
+      "clause_category": "security_deposit_restrictions",
+      "name": "Excessive Security Deposit Requirements",
+      "expected_label": "illegal",
+      "severity_range": [
+        7,
+        8
+      ],
+      "key_indicators": [
+        "deposit exceeds state limits",
+        "non-refundable deposit",
+        "conditions for refund not valid"
+      ],
+      "what_to_flag": "Identify clauses that impose excessive or illegal conditions on security deposits.",
+      "description": "This clause is illegal as it violates state laws regarding security deposits."
+    },
+    {
+      "clause_category": "discriminatory_policies",
+      "name": "Discriminatory Lease Terms",
+      "expected_label": "illegal",
+      "severity_range": [
+        10,
+        10
+      ],
+      "key_indicators": [
+        "refusal to rent based on protected class",
+        "different rules for families",
+        "discriminatory occupancy limits"
+      ],
+      "what_to_flag": "Flag any clauses that discriminate against tenants based on protected characteristics.",
+      "description": "This clause is illegal as it violates the Fair Housing Act."
+    },
+    {
+      "clause_category": "unreasonable_late_fees",
+      "name": "Unreasonable Late Fees",
+      "expected_label": "illegal",
+      "severity_range": [
+        6,
+        7
+      ],
+      "key_indicators": [
+        "excessive late fees",
+        "daily compounded fees",
+        "fees beyond legal limits"
+      ],
+      "what_to_flag": "Identify clauses that impose excessive or unreasonable late fees.",
+      "description": "This clause is illegal as it violates state laws regarding late fees."
+    },
+    {
+      "clause_category": "prohibition_of_guests",
+      "name": "Prohibition of Guests or Roommates",
+      "expected_label": "illegal",
+      "severity_range": [
+        5,
+        6
+      ],
+      "key_indicators": [
+        "no guests allowed",
+        "ban on live-in partners",
+        "strict occupancy limits"
+      ],
+      "what_to_flag": "Flag any clause that prohibits tenants from having guests or roommates.",
+      "description": "This clause is illegal as it restricts tenants' rights to have guests or family members."
+    },
+    {
+      "clause_category": "waiver_of_legal_action",
+      "name": "Waiver of Right to Legal Action",
+      "expected_label": "illegal",
+      "severity_range": [
+        9,
+        10
+      ],
+      "key_indicators": [
+        "tenant waives right to sue",
+        "no legal recourse for tenant",
+        "landlord not liable for negligence"
+      ],
+      "what_to_flag": "Identify clauses that prevent tenants from taking legal action against landlords.",
+      "description": "This clause is illegal as it denies tenants their right to seek legal remedies."
+    },
+    {
+      "clause_category": "emergency_services_restriction",
+      "name": "Restriction on Emergency Services",
+      "expected_label": "illegal",
+      "severity_range": [
+        10,
+        10
+      ],
+      "key_indicators": [
+        "prohibits calling 911",
+        "limits access to emergency services",
+        "tenant must notify landlord first"
+      ],
+      "what_to_flag": "Flag any clause that restricts tenants from contacting emergency services.",
+      "description": "This clause is illegal as it endangers tenant safety and well-being."
+    },
+    {
+      "clause_category": "security_deposit_receipt",
+      "name": "Denial of Security Deposit Receipt",
+      "expected_label": "illegal",
+      "severity_range": [
+        6,
+        7
+      ],
+      "key_indicators": [
+        "no receipt for deposit",
+        "deposit not documented",
+        "funds not held in separate account"
+      ],
+      "what_to_flag": "Identify clauses that deny tenants a receipt for their security deposit.",
+      "description": "This clause is illegal as it violates state laws requiring documentation of security deposits."
+    },
+    {
+      "clause_category": "rent_increase_notification",
+      "name": "Rent Increase Notification",
+      "expected_label": "needs_negotiation",
+      "severity_range": [
+        4,
+        5
+      ],
+      "key_indicators": [
+        "landlord can increase rent with notice",
+        "no cap on rent increases",
+        "notice period unspecified"
+      ],
+      "what_to_flag": "Flag clauses that allow landlords to increase rent without clear limits or notice.",
+      "description": "This clause is standard but should be negotiated for clarity and fairness."
+    },
+    {
+      "clause_category": "subletting_restrictions",
+      "name": "Restrictions on Subletting",
+      "expected_label": "needs_negotiation",
+      "severity_range": [
+        5,
+        6
+      ],
+      "key_indicators": [
+        "subletting requires landlord approval",
+        "no subletting allowed",
+        "strict conditions for subletting"
+      ],
+      "what_to_flag": "Identify clauses that impose strict restrictions on subletting.",
+      "description": "This clause is standard but may be negotiable for tenant flexibility."
+    },
+    {
+      "clause_category": "lease_termination_notice",
+      "name": "Lease Termination Notice Requirements",
+      "expected_label": "fair",
+      "severity_range": [
+        3,
+        4
+      ],
+      "key_indicators": [
+        "30-day notice for termination",
+        "written notice required",
+        "specific notice period outlined"
+      ],
+      "what_to_flag": "Flag clauses that outline the notice period for lease termination.",
+      "description": "This clause is fair as it provides clear expectations for both parties."
+    },
+    {
+      "clause_category": "maintenance_responsibilities",
+      "name": "Tenant Maintenance Responsibilities",
+      "expected_label": "fair",
+      "severity_range": [
+        3,
+        4
+      ],
+      "key_indicators": [
+        "tenant responsible for minor repairs",
+        "maintenance duties outlined",
+        "tenant must keep premises clean"
+      ],
+      "what_to_flag": "Identify clauses that outline tenant maintenance responsibilities.",
+      "description": "This clause is fair as it establishes reasonable expectations for tenant upkeep."
+    }
+  ]
+}

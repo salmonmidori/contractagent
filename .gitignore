@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distributions
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.idea/
+.vscode/
+.claude/
+# We explicitly want to commit settings.json for the course,
+# but usually avoid task history etc.
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Secrets
+secrets.txt
+.env
+
+# OS
+.DS_Store
+
+# Prompt lab cached inputs (generated, not committed)
+evaluation/prompt_test_inputs.json
+agent/chromadb/
+agent/agent_cache.json
+
+# Reference scripts (instructor use only)
+reference_scripts/

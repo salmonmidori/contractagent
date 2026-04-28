@@ -1,0 +1,9 @@
+openai
+pypdf
+requests
+beautifulsoup4
+pandas
+numpy
+matplotlib
+jupyter
+ipywidgets
