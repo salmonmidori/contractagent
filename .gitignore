@@ -24,6 +24,7 @@ share/python-wheels/
 venv/
 ENV/
 env/
+.tmp/
 
 # IDEs
 .idea/
@@ -44,8 +45,11 @@ secrets.txt
 
 # Prompt lab cached inputs (generated, not committed)
 evaluation/prompt_test_inputs.json
-agent/chromadb/
 agent/agent_cache.json
+
+# Local app logs
+streamlit.log
+streamlit.err.log
 
 # Reference scripts (instructor use only)
 reference_scripts/

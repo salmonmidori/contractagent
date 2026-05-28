@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: leaseguard-ai
+    runtime: python
+    buildCommand: pip install -r frontend/requirements-live-audit.txt
+    startCommand: streamlit run frontend/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LEASEGUARD_APP_PASSWORD
+        sync: false

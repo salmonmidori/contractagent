@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -39,6 +39,11 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 # --- ChromaDB ---
 import chromadb
 
+try:
+    from frontend.secrets_utils import get_secret
+except ImportError:
+    from secrets_utils import get_secret
+
 # ===================================================================
 # Path resolution
 # ===================================================================
@@ -54,25 +59,16 @@ _CACHE_FILE = _DIR_AGENT / "agent_cache.json"
 # Secrets loading
 # ===================================================================
 
-def _load_secrets() -> dict:
-    """Load key=value pairs from secrets.txt into a dict."""
-    secrets_path = _PROJECT_ROOT / "secrets.txt"
-    secrets = {}
-    if secrets_path.exists():
-        for line in secrets_path.read_text().splitlines():
-            line = line.strip()
-            if "=" in line and not line.startswith("#"):
-                key, val = line.split("=", 1)
-                secrets[key.strip()] = val.strip()
-    return secrets
-
 
 def _ensure_api_keys():
-    """Push API keys from secrets.txt into os.environ if not already set."""
-    secrets = _load_secrets()
+    """Push API keys from env, Streamlit secrets, or local secrets.txt into os.environ."""
     for key in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
-        if key not in os.environ and key in secrets:
-            os.environ[key] = secrets[key]
+        if key in os.environ and os.environ[key].strip():
+            continue
+
+        secret_value = get_secret(key, project_root=_PROJECT_ROOT)
+        if secret_value:
+            os.environ[key] = secret_value
 
 
 # ===================================================================
@@ -293,15 +289,141 @@ def _call_llm_with_tools(messages, max_tool_rounds=3, stage_name=None):
     return result
 
 
+def _call_llm(messages, stage_name=None):
+    cache = _load_cache()
+    if stage_name:
+        content_str = "|".join(m.content for m in messages if hasattr(m, "content"))
+        content_hash = hashlib.sha256(content_str.encode()).hexdigest()[:32]
+        ck = _cache_key(stage_name, content_hash)
+        if ck in cache:
+            return cache[ck]
+    else:
+        ck = None
+
+    result = _llm.invoke(messages).content
+
+    if ck:
+        cache[ck] = result
+        _save_cache(cache)
+
+    return result
+
+
 # ===================================================================
 # Lease ingestion
 # ===================================================================
 
+def _normalize_prompt_text(text: str) -> str:
+    cleaned = text or ""
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    cleaned = _normalize_prompt_text(text)
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    truncated = cleaned[:max_chars].rsplit(" ", 1)[0].strip()
+    return f"{truncated}\n\n[Truncated for model input]"
+
+
+def _split_long_block(block: str, max_chars: int) -> list[str]:
+    pieces: list[str] = []
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", block)
+        if sentence.strip()
+    ]
+    current: list[str] = []
+    current_len = 0
+
+    for sentence in sentences:
+        sentence_len = len(sentence) + (1 if current else 0)
+        if current and current_len + sentence_len > max_chars:
+            pieces.append(" ".join(current).strip())
+            current = [sentence]
+            current_len = len(sentence)
+            continue
+
+        if not current and len(sentence) > max_chars:
+            pieces.append(_truncate_text(sentence, max_chars))
+            current_len = 0
+            continue
+
+        current.append(sentence)
+        current_len += sentence_len
+
+    if current:
+        pieces.append(" ".join(current).strip())
+
+    return pieces
+
+
+def _split_contract_chunks(contract_text: str, max_chars: int = 25000) -> list[str]:
+    normalized = _normalize_prompt_text(contract_text)
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    numbered_blocks = [
+        block.strip()
+        for block in re.split(r"(?=\n?\d+[.)]\s+)", normalized)
+        if block.strip()
+    ]
+    blocks = numbered_blocks if len(numbered_blocks) > 1 else [
+        block.strip()
+        for block in re.split(r"\n\s*\n", normalized)
+        if block.strip()
+    ]
+
+    if not blocks:
+        return [_truncate_text(normalized, max_chars)]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush_current():
+        nonlocal current, current_len
+        if current:
+            chunks.append("\n\n".join(current).strip())
+            current = []
+            current_len = 0
+
+    for block in blocks:
+        if len(block) > max_chars:
+            flush_current()
+            chunks.extend(_split_long_block(block, max_chars))
+            continue
+
+        addition = len(block) + (2 if current else 0)
+        if current and current_len + addition > max_chars:
+            flush_current()
+
+        current.append(block)
+        current_len += addition
+
+    flush_current()
+    return chunks or [_truncate_text(normalized, max_chars)]
+
+
 def ingest_user_lease(file_path: str) -> str:
-    """Extract text from a lease PDF/DOCX using LlamaIndex."""
-    documents = SimpleDirectoryReader(input_files=[file_path]).load_data()
-    text = "\n\n".join([doc.text for doc in documents])
-    return text
+    """Extract text from a lease PDF/DOCX and normalize it for LLM review."""
+    text = ""
+
+    try:
+        try:
+            from frontend.audit_backend import extract_lease_text
+        except ImportError:
+            from audit_backend import extract_lease_text
+        text = extract_lease_text(file_path)
+    except Exception:
+        documents = SimpleDirectoryReader(input_files=[file_path]).load_data()
+        text = "\n\n".join(doc.text for doc in documents)
+
+    return _normalize_prompt_text(text)
 
 
 # ===================================================================
@@ -397,6 +519,76 @@ def _extract_fields(section_text: str) -> dict:
             result["explanation"] = line.split(":", 1)[1].strip().strip("*")
 
     return result
+
+
+def _finding_key(finding: dict[str, Any]) -> str:
+    clause_name = str(finding.get("clause_name") or "").lower()
+    clause_name = re.sub(r"[^a-z0-9]+", " ", clause_name).strip()
+    if clause_name:
+        return clause_name
+
+    raw_output = _normalize_prompt_text(str(finding.get("raw_output") or ""))
+    if raw_output:
+        return hashlib.sha256(raw_output.encode()).hexdigest()[:16]
+
+    return hashlib.sha256(repr(sorted(finding.items())).encode()).hexdigest()[:16]
+
+
+def _dedupe_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+
+    for finding in findings:
+        key = _finding_key(finding)
+        if key not in deduped:
+            deduped[key] = finding
+            ordered_keys.append(key)
+            continue
+
+        existing = deduped[key]
+        existing_severity = existing.get("severity") or -1
+        new_severity = finding.get("severity") or -1
+        if new_severity > existing_severity:
+            deduped[key] = finding
+
+    return [deduped[key] for key in ordered_keys]
+
+
+def _format_findings_for_prompt(
+    findings: list[dict[str, Any]],
+    *,
+    include_fair: bool,
+    max_items: int = 40,
+) -> str:
+    lines: list[str] = []
+
+    for finding in findings:
+        label = str(finding.get("label") or "unknown").strip().lower()
+        if not include_fair and label == "fair":
+            continue
+
+        clause_name = str(finding.get("clause_name") or "Unnamed clause").strip()
+        severity = finding.get("severity")
+        severity_text = str(int(severity)) if isinstance(severity, (int, float)) else "n/a"
+        explanation_source = (
+            str(finding.get("explanation") or "").strip()
+            or str(finding.get("raw_output") or "").strip()
+        )
+        explanation = _truncate_text(explanation_source, 260).replace("\n", " ")
+        lines.append(
+            "\n".join(
+                [
+                    f"- Clause: {clause_name}",
+                    f"  Label: {label}",
+                    f"  Severity: {severity_text}",
+                    f"  Explanation: {explanation}",
+                ]
+            )
+        )
+        if len(lines) >= max_items:
+            break
+
+    return "\n\n".join(lines) if lines else "- No non-fair findings were identified."
 
 
 # ===================================================================
@@ -529,42 +721,68 @@ def _stage_define_standards(contract_text: str, city: str, state: str) -> str:
         SystemMessage(content=PROMPT_DEFINE_STANDARDS),
         HumanMessage(content=(
             f"Renter's Location: {city}, {state}\n\n"
-            f"Lease Contract to Review:\n{contract_text[:8000]}\n\n"
+            f"Lease Contract to Review:\n{_truncate_text(contract_text, 12000)}\n\n"
             "Using the tools available to you, retrieve relevant legal standards "
             "and gold standard lease language for this jurisdiction. Then establish "
             "the baseline standards against which this lease will be evaluated."
         )),
     ]
-    return _call_llm_with_tools(messages, stage_name="define_standards")
+    return _call_llm_with_tools(messages, stage_name="define_standards_v2")
 
 
-def _stage_analyze_clauses(contract_text: str, standards: str, city: str, state: str):
-    messages = [
-        SystemMessage(content=PROMPT_ANALYZE_CLAUSES),
-        HumanMessage(content=(
-            f"Renter's Location: {city}, {state}\n\n"
-            f"Standards Framework:\n{standards}\n\n"
-            f"Lease Contract:\n{contract_text}\n\n"
-            "Analyze each clause in this lease. For each clause, provide:\n"
-            "- **Clause**: name/description\n"
-            "- **Label**: illegal / unfair but legal / unclear or ambiguous / outdated / fair\n"
-            "- **Severity**: score from 1 (minor) to 10 (critical)\n"
-            "- **Explanation**: why this clause received this label\n\n"
-            "Use the tools to verify against legal standards and gold standard language."
-        )),
-    ]
-    raw_analysis = _call_llm_with_tools(messages, stage_name="analyze_clauses")
-    findings = parse_clause_analysis(raw_analysis)
+def _stage_analyze_clauses(
+    contract_text: str,
+    standards: str,
+    city: str,
+    state: str,
+    on_chunk: Optional[Callable[[int, int], None]] = None,
+):
+    standards_excerpt = _truncate_text(standards, 6000)
+    chunks = _split_contract_chunks(contract_text)
+    raw_parts: list[str] = []
+
+    for index, chunk in enumerate(chunks, start=1):
+        if on_chunk:
+            on_chunk(index, len(chunks))
+
+        messages = [
+            SystemMessage(content=PROMPT_ANALYZE_CLAUSES),
+            HumanMessage(content=(
+                f"Renter's Location: {city}, {state}\n\n"
+                f"Standards Framework:\n{standards_excerpt}\n\n"
+                f"Lease Contract Excerpt ({index}/{len(chunks)}):\n{chunk}\n\n"
+                "Analyze each clause in this lease excerpt. Only analyze clauses that "
+                "appear in this excerpt. If a clause is clearly duplicated boilerplate, "
+                "do not repeat it unnecessarily.\n\n"
+                "For each clause, provide:\n"
+                "- **Clause**: name/description\n"
+                "- **Label**: illegal / unfair but legal / unclear or ambiguous / outdated / fair\n"
+                "- **Severity**: score from 1 (minor) to 10 (critical)\n"
+                "- **Explanation**: why this clause received this label\n\n"
+                "Use the tools to verify against legal standards and gold standard language."
+            )),
+        ]
+        raw_parts.append(
+            _call_llm(
+                messages,
+                stage_name=f"analyze_clauses_v3_chunk_{index}_of_{len(chunks)}",
+            )
+        )
+
+    raw_analysis = "\n\n".join(part for part in raw_parts if part)
+    findings = _dedupe_findings(parse_clause_analysis(raw_analysis))
     return findings, raw_analysis
 
 
-def _stage_prioritize(findings, raw_analysis: str, standards: str, city: str, state: str) -> str:
+def _stage_prioritize(findings, standards: str, city: str, state: str) -> str:
+    standards_excerpt = _truncate_text(standards, 5000)
+    findings_summary = _format_findings_for_prompt(findings, include_fair=False)
     messages = [
         SystemMessage(content=PROMPT_PRIORITIZE_FINDINGS),
         HumanMessage(content=(
             f"Renter's Location: {city}, {state}\n\n"
-            f"Standards Framework:\n{standards}\n\n"
-            f"Clause Analysis Results:\n{raw_analysis}\n\n"
+            f"Standards Framework:\n{standards_excerpt}\n\n"
+            f"Clause Analysis Results:\n{findings_summary}\n\n"
             "Rank the findings above by priority. Consider:\n"
             "- Legal risk (illegal clauses first)\n"
             "- Financial impact on the renter\n"
@@ -573,20 +791,25 @@ def _stage_prioritize(findings, raw_analysis: str, standards: str, city: str, st
             "Provide a numbered priority list with justification for the ranking."
         )),
     ]
-    return _call_llm_with_tools(messages, stage_name="prioritize_findings")
+    return _call_llm(messages, stage_name="prioritize_findings_v3")
 
 
 def _stage_generate_report(
-    contract_text: str, standards: str, raw_analysis: str,
+    contract_text: str, findings, standards: str,
     prioritized: str, city: str, state: str,
 ) -> str:
+    standards_excerpt = _truncate_text(standards, 4000)
+    contract_excerpt = _truncate_text(contract_text, 4000)
+    findings_summary = _format_findings_for_prompt(findings, include_fair=True)
+    prioritized_excerpt = _truncate_text(prioritized, 5000)
     messages = [
         SystemMessage(content=PROMPT_GENERATE_REPORT),
         HumanMessage(content=(
             f"Renter's Location: {city}, {state}\n\n"
-            f"Standards Framework:\n{standards}\n\n"
-            f"Clause Analysis:\n{raw_analysis}\n\n"
-            f"Prioritized Findings:\n{prioritized}\n\n"
+            f"Lease Overview:\n{contract_excerpt}\n\n"
+            f"Standards Framework:\n{standards_excerpt}\n\n"
+            f"Clause Analysis:\n{findings_summary}\n\n"
+            f"Prioritized Findings:\n{prioritized_excerpt}\n\n"
             "Generate a complete Improvement Decision Report. Include:\n"
             "1. Executive Summary of the lease review\n"
             "2. Facts: Key terms and conditions found\n"
@@ -598,7 +821,7 @@ def _stage_generate_report(
             "8. Citations: Specific laws, ordinances, and standards referenced\n"
         )),
     ]
-    return _call_llm_with_tools(messages, stage_name="generate_report")
+    return _call_llm(messages, stage_name="generate_report_v3")
 
 
 def run_pipeline(
@@ -633,14 +856,22 @@ def run_pipeline(
     _status("Stage 1/4: Defining legal standards for your jurisdiction...")
     standards = _stage_define_standards(contract_text, city, state)
 
-    _status("Stage 2/4: Analyzing lease clauses...")
-    findings, raw_analysis = _stage_analyze_clauses(contract_text, standards, city, state)
+    def _chunk_status(index: int, total: int):
+        _status(f"Stage 2/4: Analyzing lease clauses ({index}/{total})...")
+
+    findings, raw_analysis = _stage_analyze_clauses(
+        contract_text,
+        standards,
+        city,
+        state,
+        on_chunk=_chunk_status,
+    )
 
     _status("Stage 3/4: Prioritizing findings...")
-    prioritized = _stage_prioritize(findings, raw_analysis, standards, city, state)
+    prioritized = _stage_prioritize(findings, standards, city, state)
 
     _status("Stage 4/4: Generating improvement report...")
-    report = _stage_generate_report(contract_text, standards, raw_analysis, prioritized, city, state)
+    report = _stage_generate_report(contract_text, findings, standards, prioritized, city, state)
 
     return {
         "report": report,
