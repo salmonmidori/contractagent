@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hmac
 import importlib.util
 import json
+from mimetypes import guess_type
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
     from frontend.audit_backend import run_live_pipeline, run_reader_pipeline, run_sample_pipeline
@@ -264,6 +267,7 @@ def _get_capabilities() -> dict[str, Any]:
 def _init_state() -> None:
     st.session_state.setdefault("app_authenticated", False)
     st.session_state.setdefault("app_auth_error", "")
+    st.session_state.setdefault("active_page", "Lease Review")
     st.session_state.setdefault("audit_results", None)
     st.session_state.setdefault("audit_source", None)
     st.session_state.setdefault("reader_results", None)
@@ -322,6 +326,42 @@ def _severity_markup(score: float | int | None) -> str:
     return ":green[Low risk]"
 
 
+def _mime_type_for_name(name: str) -> str | None:
+    mime_type, _ = guess_type(name)
+    return mime_type
+
+
+def _source_name(results: dict[str, Any]) -> str:
+    return str(results.get("source_name") or "").strip()
+
+
+def _source_preview_bytes(results: dict[str, Any]) -> bytes | None:
+    preview_bytes = results.get("source_bytes")
+    if isinstance(preview_bytes, bytes):
+        return preview_bytes
+    return None
+
+
+def _source_mime_type(results: dict[str, Any]) -> str | None:
+    mime_type = results.get("source_mime_type")
+    if isinstance(mime_type, str) and mime_type:
+        return mime_type
+    source_name = _source_name(results)
+    return _mime_type_for_name(source_name) if source_name else None
+
+
+def _attach_uploaded_source_metadata(
+    results: dict[str, Any],
+    source_name: str,
+    source_bytes: bytes,
+    source_mime_type: str | None,
+) -> dict[str, Any]:
+    results["source_name"] = source_name
+    results["source_bytes"] = source_bytes
+    results["source_mime_type"] = source_mime_type or _mime_type_for_name(source_name)
+    return results
+
+
 def _store_reader_results(results: dict[str, Any], source: str) -> None:
     st.session_state["reader_results"] = copy.deepcopy(results)
     st.session_state["reader_source"] = source
@@ -373,6 +413,43 @@ def _get_reader_content() -> tuple[dict[str, Any], str]:
     return {"reader_sections": []}, "empty"
 
 
+def _open_reader_page() -> None:
+    st.session_state["active_page"] = "Read the Lease"
+    st.rerun()
+
+
+def _render_review_source_preview(results: dict[str, Any]) -> None:
+    source_name = _source_name(results)
+    if not source_name:
+        return
+
+    with st.container(border=True):
+        name_col, action_col = st.columns([5, 1.4])
+        with name_col:
+            st.markdown(f"**{source_name}**")
+        with action_col:
+            st.button(
+                "Read full lease",
+                key=f"read_full_lease_{source_name}",
+                use_container_width=True,
+                on_click=_open_reader_page,
+            )
+
+        mime_type = _source_mime_type(results)
+        source_bytes = _source_preview_bytes(results)
+        if mime_type == "application/pdf" and source_bytes:
+            encoded_pdf = base64.b64encode(source_bytes).decode("utf-8")
+            pdf_html = f"""
+            <iframe
+                src="data:application/pdf;base64,{encoded_pdf}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH"
+                width="100%"
+                height="320"
+                style="border:0;border-radius:12px;background:white;"
+            ></iframe>
+            """
+            components.html(pdf_html, height=330)
+
+
 def _render_audit_results(results: dict[str, Any], source: str | None) -> None:
     findings = results.get("findings", [])
     report = results.get("report", "")
@@ -380,8 +457,7 @@ def _render_audit_results(results: dict[str, Any], source: str | None) -> None:
     flagged_findings = [item for item in findings if item.get("label") != "fair"]
     fair_findings = [item for item in findings if item.get("label") == "fair"]
 
-    if source == "sample":
-        st.caption("Sample review")
+    _render_review_source_preview(results)
 
     st.subheader("Flagged clauses", anchor=False)
     if flagged_findings:
@@ -571,9 +647,10 @@ def _render_lease_audit_page() -> None:
             elif not city or not state:
                 st.warning("Add city and state to tailor the review.")
             else:
+                uploaded_bytes = uploaded_file.getvalue()
                 suffix = Path(uploaded_file.name).suffix
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                    temp_file.write(uploaded_file.getbuffer())
+                    temp_file.write(uploaded_bytes)
                     temp_path = temp_file.name
 
                 with st.status("Reviewing lease...", expanded=True) as status:
@@ -588,6 +665,12 @@ def _render_lease_audit_page() -> None:
                             city=city,
                             state=state,
                             on_stage=_on_stage,
+                        )
+                        _attach_uploaded_source_metadata(
+                            results,
+                            source_name=uploaded_file.name,
+                            source_bytes=uploaded_bytes,
+                            source_mime_type=uploaded_file.type,
                         )
                         st.session_state["audit_results"] = results
                         st.session_state["audit_source"] = "live"
@@ -642,9 +725,10 @@ def _render_term_page() -> None:
         if not uploaded_file:
             st.warning("Add a PDF or DOCX lease to continue.")
         else:
+            uploaded_bytes = uploaded_file.getvalue()
             suffix = Path(uploaded_file.name).suffix
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                temp_file.write(uploaded_file.getbuffer())
+                temp_file.write(uploaded_bytes)
                 temp_path = temp_file.name
 
             with st.status("Opening lease...", expanded=True) as status:
@@ -657,6 +741,12 @@ def _render_term_page() -> None:
                     results = run_reader_pipeline(
                         file_path=temp_path,
                         on_stage=_on_stage,
+                    )
+                    _attach_uploaded_source_metadata(
+                        results,
+                        source_name=uploaded_file.name,
+                        source_bytes=uploaded_bytes,
+                        source_mime_type=uploaded_file.type,
                     )
                     _store_reader_results(results, "upload")
                     status.update(label="Lease ready", state="complete")
@@ -793,6 +883,7 @@ def _render_sidebar() -> str:
             "Navigate",
             ["Lease Review", "Read the Lease", "Get Local Help"],
             label_visibility="collapsed",
+            key="active_page",
         )
     return page
 

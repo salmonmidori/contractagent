@@ -6,6 +6,7 @@ import csv
 import io
 import re
 import zipfile
+from mimetypes import guess_type
 from pathlib import Path
 from typing import Any, Callable
 from xml.etree import ElementTree as ET
@@ -14,6 +15,7 @@ from xml.etree import ElementTree as ET
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_FINDINGS_PATH = PROJECT_ROOT / "agent" / "clause_findings.csv"
 SAMPLE_REPORT_PATH = PROJECT_ROOT / "agent" / "improvement_decision_report.md"
+SAMPLE_LEASE_PATH = PROJECT_ROOT / "rag_data" / "other_leases" / "Chicago Sublease.pdf"
 
 MOJIBAKE_REPLACEMENTS = {
     "â€™": "'",
@@ -52,6 +54,27 @@ def _normalize_spacing(text: str) -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def _mime_type_for_path(path: Path) -> str | None:
+    mime_type, _ = guess_type(str(path))
+    return mime_type
+
+
+def _build_source_metadata(path: Path | None) -> dict[str, Any]:
+    if not path:
+        return {
+            "source_name": "",
+            "source_mime_type": None,
+            "source_bytes": None,
+        }
+
+    source_bytes = path.read_bytes() if path.exists() else None
+    return {
+        "source_name": path.name,
+        "source_mime_type": _mime_type_for_path(path),
+        "source_bytes": source_bytes,
+    }
 
 
 def _extract_clause_text(raw_output: str) -> str | None:
@@ -300,6 +323,7 @@ def run_sample_pipeline(on_stage: Callable[[str], None] | None = None) -> dict[s
     cleaned_lease_text = build_cleaned_lease_text(findings)
     plain_language_translation = build_plain_language_translation(findings)
     reader_sections = _reader_sections_from_findings(findings)
+    source_metadata = _build_source_metadata(SAMPLE_LEASE_PATH)
     if on_stage:
         on_stage("Sample analysis ready.")
 
@@ -312,6 +336,7 @@ def run_sample_pipeline(on_stage: Callable[[str], None] | None = None) -> dict[s
         "cleaned_lease_text": cleaned_lease_text,
         "plain_language_translation": plain_language_translation,
         "reader_sections": reader_sections,
+        **source_metadata,
     }
 
 
@@ -324,6 +349,7 @@ def run_reader_pipeline(file_path: str, on_stage: Callable[[str], None] | None =
     cleaned_text = _normalize_spacing(raw_text)
     translation = build_plain_language_translation_from_text(cleaned_text)
     reader_sections = _reader_sections_from_text(cleaned_text)
+    source_metadata = _build_source_metadata(Path(file_path))
 
     if on_stage:
         on_stage("Lease text ready.")
@@ -337,6 +363,7 @@ def run_reader_pipeline(file_path: str, on_stage: Callable[[str], None] | None =
         "cleaned_lease_text": cleaned_text,
         "plain_language_translation": translation,
         "reader_sections": reader_sections,
+        **source_metadata,
     }
 
 
@@ -377,7 +404,9 @@ def run_live_pipeline(
     else:
         plain_language_translation = plain_language_from_findings
 
+    source_metadata = _build_source_metadata(Path(file_path))
     results["cleaned_lease_text"] = cleaned_lease_text
     results["plain_language_translation"] = plain_language_translation
     results["reader_sections"] = reader_sections
+    results.update(source_metadata)
     return results
