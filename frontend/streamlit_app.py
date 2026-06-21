@@ -315,6 +315,7 @@ def _init_state() -> None:
     st.session_state.setdefault("active_mode", "translation")
     st.session_state.setdefault("upload_key_version", 0)
     st.session_state.setdefault("viewer_page", 0)
+    st.session_state.setdefault("viewer_zoom", 1.0)
     st.session_state.setdefault("viewer_source_name", "")
     st.session_state.setdefault("workspace_context", "")
     st.session_state.setdefault("audit_results", None)
@@ -335,6 +336,7 @@ def _load_sample_audit() -> None:
     st.session_state["active_mode"] = "translation"
     st.session_state["viewer_source_name"] = ""
     st.session_state["viewer_page"] = 0
+    st.session_state["viewer_zoom"] = 1.0
 
 
 def _mime_type_for_name(name: str) -> str | None:
@@ -384,12 +386,17 @@ def _set_active_mode(mode: str) -> None:
     st.session_state["active_mode"] = mode
 
 
+def _set_viewer_zoom(zoom_value: float) -> None:
+    st.session_state["viewer_zoom"] = max(0.8, min(1.6, round(zoom_value, 2)))
+
+
 def _clear_workspace(preserve_context: bool = True) -> None:
     st.session_state["audit_results"] = None
     st.session_state["audit_source"] = None
     st.session_state["reader_results"] = None
     st.session_state["reader_source"] = None
     st.session_state["viewer_page"] = 0
+    st.session_state["viewer_zoom"] = 1.0
     st.session_state["viewer_source_name"] = ""
     st.session_state["active_mode"] = "translation"
     st.session_state["upload_key_version"] = st.session_state.get("upload_key_version", 0) + 1
@@ -446,31 +453,104 @@ def _severity_badge_html(score: float | int | None) -> str:
     )
 
 
+def _icon_svg(name: str, color: str = "currentColor") -> str:
+    icons = {
+        "brand": (
+            '<path d="M12 3.2 4.6 7v5.5c0 4.3 3 8.2 7.4 9.3 4.4-1.1 7.4-5 7.4-9.3V7L12 3.2Z" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<path d="M8.9 12.2 12 9.6l3.1 2.6v3.8H8.9z" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        ),
+        "file": (
+            '<path d="M8 3.8h5.8l4.2 4.2v11.8a1.6 1.6 0 0 1-1.6 1.6H8a1.6 1.6 0 0 1-1.6-1.6V5.4A1.6 1.6 0 0 1 8 3.8Z" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<path d="M13.8 3.8V8h4.2" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<path d="M9.4 12.2h5.2M9.4 15.4h5.2" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>'
+        ),
+        "shield": (
+            '<path d="M12 3.4 5.4 6.2v4.7c0 4.2 2.7 7.9 6.6 9 3.9-1.1 6.6-4.8 6.6-9V6.2L12 3.4Z" fill="none" stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<path d="m9.4 12.1 1.7 1.8 3.5-3.9" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+        ),
+        "pin": (
+            '<path d="M12 20.2s5.9-4.5 5.9-9.7A5.9 5.9 0 1 0 6.1 10.5c0 5.2 5.9 9.7 5.9 9.7Z" fill="none" stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<circle cx="12" cy="10.5" r="2.2" fill="none" stroke="{color}" stroke-width="1.7"/>'
+        ),
+        "users": (
+            '<path d="M8.3 18.4v-1.2a3.2 3.2 0 0 1 3.2-3.2h1a3.2 3.2 0 0 1 3.2 3.2v1.2" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<circle cx="12" cy="8.8" r="2.8" fill="none" stroke="{color}" stroke-width="1.7"/>'
+            '<path d="M5.3 18.2v-.7a2.3 2.3 0 0 1 2.1-2.3M18.7 18.2v-.7a2.3 2.3 0 0 0-2.1-2.3" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>'
+        ),
+        "home": (
+            '<path d="m4.9 11.3 7.1-5.8 7.1 5.8" fill="none" stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+            '<path d="M7.2 10.8v8.1h9.6v-8.1" fill="none" stroke="{color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+        ),
+        "calendar": (
+            '<rect x="5.2" y="6.2" width="13.6" height="12.6" rx="2" fill="none" stroke="{color}" stroke-width="1.7"/>'
+            '<path d="M8.2 4.8v2.8M15.8 4.8v2.8M5.4 9.5h13.2" fill="none" stroke="{color}" stroke-width="1.6" stroke-linecap="round"/>'
+        ),
+        "dollar": (
+            '<path d="M12 5.2v13.6M15.2 7.8a3 3 0 0 0-2.8-1.4c-1.9 0-3.2 1-3.2 2.5 0 1.6 1.2 2.2 3.3 2.8 2.1.6 3.7 1.3 3.7 3.2 0 1.9-1.6 3-3.8 3a5.2 5.2 0 0 1-4-1.7" fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+        ),
+    }
+    body = icons.get(name, icons["file"]).format(color=color)
+    return f"<svg viewBox='0 0 24 24' aria-hidden='true'>{body}</svg>"
+
+
 def _mode_icon_html(mode_key: str) -> str:
     config = {
-        "translation": ("T", "leaseguard-icon-blue"),
-        "risks": ("R", "leaseguard-icon-orange"),
-        "help": ("H", "leaseguard-icon-green"),
+        "translation": ("file", "leaseguard-icon-blue"),
+        "risks": ("shield", "leaseguard-icon-orange"),
+        "help": ("pin", "leaseguard-icon-green"),
     }
-    symbol, css_class = config.get(mode_key, ("L", "leaseguard-icon-blue"))
-    return f"<div class='leaseguard-mode-icon {css_class}'>{symbol}</div>"
+    icon_name, css_class = config.get(mode_key, ("file", "leaseguard-icon-blue"))
+    return f"<div class='leaseguard-mode-icon {css_class}'>{_icon_svg(icon_name)}</div>"
 
 
-def _panel_section_icon(title: str) -> str:
+def _panel_section_icon_html(title: str) -> str:
     lowered = title.lower()
     if "rent" in lowered or "fee" in lowered or "payment" in lowered:
-        return "$"
-    if "term" in lowered or "date" in lowered or "renew" in lowered:
-        return "T"
-    if "party" in lowered or "tenant" in lowered or "landlord" in lowered:
-        return "P"
-    if "pet" in lowered:
-        return "P"
-    if "repair" in lowered or "maintenance" in lowered:
-        return "M"
-    if "notice" in lowered or "entry" in lowered or "access" in lowered:
-        return "N"
-    return "L"
+        icon_name = "dollar"
+        css_class = "leaseguard-icon-blue"
+    elif "term" in lowered or "date" in lowered or "renew" in lowered:
+        icon_name = "calendar"
+        css_class = "leaseguard-icon-orange"
+    elif "party" in lowered or "tenant" in lowered or "landlord" in lowered:
+        icon_name = "users"
+        css_class = "leaseguard-icon-blue"
+    elif "repair" in lowered or "maintenance" in lowered:
+        icon_name = "shield"
+        css_class = "leaseguard-icon-green"
+    elif "notice" in lowered or "entry" in lowered or "access" in lowered:
+        icon_name = "home"
+        css_class = "leaseguard-icon-green"
+    else:
+        icon_name = "file"
+        css_class = "leaseguard-icon-blue"
+    return f"<div class='leaseguard-section-icon {css_class}'>{_icon_svg(icon_name)}</div>"
+
+
+def _zoom_label() -> str:
+    return f"{int(round(st.session_state.get('viewer_zoom', 1.0) * 100))}%"
+
+
+def _zoom_in() -> None:
+    _set_viewer_zoom(st.session_state.get("viewer_zoom", 1.0) + 0.15)
+
+
+def _zoom_out() -> None:
+    _set_viewer_zoom(st.session_state.get("viewer_zoom", 1.0) - 0.15)
+
+
+def _viewer_toolbar_html(results: dict[str, Any]) -> str:
+    if _source_mime_type(results) == "application/pdf":
+        page_count = _source_page_count(results) or 1
+        current_page = _viewer_page(results) + 1
+        page_label = f"{current_page} / {page_count}"
+    else:
+        page_label = "Document"
+    return (
+        "<div class='leaseguard-viewer-toolbar-row'>"
+        f"<div class='leaseguard-toolbar-cluster'>{_icon_svg('file')}<span>{html.escape(page_label)}</span></div>"
+        f"<div class='leaseguard-toolbar-cluster'>{_icon_svg('shield')}<span>{html.escape(_zoom_label())}</span></div>"
+        "</div>"
+    )
 
 
 def _report_lines(report: str) -> list[str]:
@@ -762,7 +842,7 @@ def _render_file_strip(results: dict[str, Any]) -> None:
     source_bytes = _source_preview_bytes(results)
     mime_type = _source_mime_type(results)
     with st.container(border=True):
-        info_col, download_col, replace_col, remove_col = st.columns([5.6, 1.7, 1.5, 1.0], gap="medium")
+        info_col, download_col, replace_col, remove_col = st.columns([5.9, 1.6, 1.3, 0.9], gap="small")
         with info_col:
             if page_count:
                 page_text = f"{page_count} pages"
@@ -773,7 +853,7 @@ def _render_file_strip(results: dict[str, Any]) -> None:
             else:
                 page_text = "Lease file"
             st.markdown(
-                f"<div class='leaseguard-file-chip'><span class='leaseguard-file-ok'>&#10003;</span>"
+                f"<div class='leaseguard-file-chip'>{_icon_svg('file')}<span class='leaseguard-file-ok'>&#10003;</span>"
                 f"<strong>{html.escape(source_name)}</strong>"
                 f"<span>{html.escape(page_text)}</span></div>",
                 unsafe_allow_html=True,
@@ -781,7 +861,7 @@ def _render_file_strip(results: dict[str, Any]) -> None:
         with download_col:
             if source_bytes:
                 st.download_button(
-                    "Download original",
+                    "Download",
                     data=source_bytes,
                     file_name=source_name,
                     mime=mime_type or "application/octet-stream",
@@ -789,7 +869,7 @@ def _render_file_strip(results: dict[str, Any]) -> None:
                     use_container_width=True,
                 )
         with replace_col:
-            if st.button("Replace file", key="replace_workspace_file", use_container_width=True):
+            if st.button("Replace", key="replace_workspace_file", use_container_width=True):
                 _clear_workspace(preserve_context=True)
                 st.rerun()
         with remove_col:
@@ -806,7 +886,31 @@ def _render_pdf_document_viewer(results: dict[str, Any]) -> None:
 
     page_count = _source_page_count(results) or 1
     current_page = _viewer_page(results)
-    thumb_col, page_col = st.columns([1.05, 4.2], gap="medium")
+    st.markdown(_viewer_toolbar_html(results), unsafe_allow_html=True)
+
+    control_cols = st.columns([0.9, 1.3, 0.7, 0.9, 0.7], gap="small")
+    with control_cols[0]:
+        st.button(
+            "Back",
+            key=f"page_prev_{_source_name(results)}",
+            use_container_width=True,
+            disabled=current_page <= 0,
+            on_click=_set_viewer_page,
+            args=(current_page - 1,),
+        )
+    with control_cols[1]:
+        st.markdown(
+            f"<div class='leaseguard-page-indicator'>{current_page + 1} / {page_count}</div>",
+            unsafe_allow_html=True,
+        )
+    with control_cols[2]:
+        st.button("-", key=f"zoom_out_{_source_name(results)}", use_container_width=True, on_click=_zoom_out)
+    with control_cols[3]:
+        st.markdown(f"<div class='leaseguard-page-indicator'>{html.escape(_zoom_label())}</div>", unsafe_allow_html=True)
+    with control_cols[4]:
+        st.button("+", key=f"zoom_in_{_source_name(results)}", use_container_width=True, on_click=_zoom_in)
+
+    thumb_col, page_col = st.columns([0.95, 4.45], gap="medium")
 
     with thumb_col:
         st.markdown("<div class='leaseguard-viewer-toolbar'>Pages</div>", unsafe_allow_html=True)
@@ -816,7 +920,7 @@ def _render_pdf_document_viewer(results: dict[str, Any]) -> None:
                 if thumb:
                     st.image(thumb, use_container_width=True)
                 st.button(
-                    str(page_index + 1),
+                    f"Page {page_index + 1}",
                     key=f"page_thumb_{_source_name(results)}_{page_index}",
                     use_container_width=True,
                     type="primary" if current_page == page_index else "secondary",
@@ -825,34 +929,14 @@ def _render_pdf_document_viewer(results: dict[str, Any]) -> None:
                 )
 
     with page_col:
-        nav_cols = st.columns([1, 2, 1])
-        with nav_cols[0]:
-            st.button(
-                "Previous",
-                key=f"page_prev_{_source_name(results)}",
-                use_container_width=True,
-                disabled=current_page <= 0,
-                on_click=_set_viewer_page,
-                args=(current_page - 1,),
-            )
-        with nav_cols[1]:
-            st.markdown(
-                f"<div class='leaseguard-page-indicator'>{current_page + 1} / {page_count}</div>",
-                unsafe_allow_html=True,
-            )
-        with nav_cols[2]:
-            st.button(
-                "Next",
-                key=f"page_next_{_source_name(results)}",
-                use_container_width=True,
-                disabled=current_page >= page_count - 1,
-                on_click=_set_viewer_page,
-                args=(current_page + 1,),
-            )
-
-        page_image = _pdf_page_image(source_bytes, current_page, scale=1.2)
+        page_image = _pdf_page_image(
+            source_bytes,
+            current_page,
+            scale=max(1.05, st.session_state.get("viewer_zoom", 1.0) * 1.1),
+        )
         if page_image:
-            st.image(page_image, use_container_width=True)
+            with st.container(border=True):
+                st.image(page_image, use_container_width=True)
         else:
             st.info("Preview unavailable.")
 
@@ -884,12 +968,12 @@ def _render_translation_panel(results: dict[str, Any]) -> None:
         st.info("Upload a lease to see the translation.")
         return
 
-    for section in sections[:6]:
+    for section in sections[:5]:
         with st.container(border=True):
             title = str(section.get("title", "Lease section"))
             st.markdown(
                 f"<div class='leaseguard-section-row'>"
-                f"<div class='leaseguard-section-icon'>{_panel_section_icon(title)}</div>"
+                f"{_panel_section_icon_html(title)}"
                 f"<div class='leaseguard-section-text'><strong>{html.escape(title)}</strong></div>"
                 "</div>",
                 unsafe_allow_html=True,
@@ -961,9 +1045,9 @@ def _render_help_panel(results: dict[str, Any]) -> None:
 
 def _render_workspace_modes(results: dict[str, Any]) -> None:
     modes = [
-        ("translation", "Plain English Translation", "See your lease, clause by clause, in everyday language."),
-        ("risks", "Risks & Negotiation Tips", "Identify concerning clauses and learn what to negotiate."),
-        ("help", "Local Help", "Find tenant resources, legal aid, and housing assistance nearby."),
+        ("translation", "Plain English Translation", "See your lease in everyday language."),
+        ("risks", "Risks & Negotiation Tips", "Spot concerning clauses and what to clarify."),
+        ("help", "Local Help", "Find tenant support and legal aid nearby."),
     ]
     mode_cols = st.columns(3, gap="medium")
     for column, (mode_key, label, description) in zip(mode_cols, modes):
@@ -980,18 +1064,19 @@ def _render_workspace_modes(results: dict[str, Any]) -> None:
                 )
                 st.markdown(f"<div class='leaseguard-mode-copy'>{html.escape(description)}</div>", unsafe_allow_html=True)
 
-    left_col, right_col = st.columns([1.7, 1.05], gap="large")
+    left_col, right_col = st.columns([1.85, 1.0], gap="large")
     with left_col:
         _render_document_viewer(results)
 
     with right_col:
-        active_mode = st.session_state.get("active_mode", "translation")
-        if active_mode == "translation":
-            _render_translation_panel(results)
-        elif active_mode == "risks":
-            _render_risks_panel(results)
-        else:
-            _render_help_panel(results)
+        with st.container(border=True):
+            active_mode = st.session_state.get("active_mode", "translation")
+            if active_mode == "translation":
+                _render_translation_panel(results)
+            elif active_mode == "risks":
+                _render_risks_panel(results)
+            else:
+                _render_help_panel(results)
 
 
 def _render_glossary() -> None:
@@ -1087,6 +1172,7 @@ def _run_workspace_analysis(uploaded_file: Any, full_review_available: bool) -> 
             st.session_state["active_mode"] = "translation"
             st.session_state["viewer_source_name"] = ""
             st.session_state["viewer_page"] = 0
+            st.session_state["viewer_zoom"] = 1.0
             status.update(label="Lease ready", state="complete")
             if full_review_available and not location:
                 st.info("Add the lease city and state in Additional Context to unlock risk review and local help.")
@@ -1099,9 +1185,9 @@ def _run_workspace_analysis(uploaded_file: Any, full_review_available: bool) -> 
 
 def _render_top_shell() -> None:
     st.markdown(
-        """
+        f"""
         <div class="leaseguard-topbar">
-          <div class="leaseguard-brandmark">LG</div>
+          <div class="leaseguard-brandmark">{_icon_svg('brand')}</div>
           <div class="leaseguard-brandtext">LeaseGuard AI</div>
         </div>
         <div class="leaseguard-hero">
@@ -1466,6 +1552,69 @@ def _apply_styles() -> None:
             font-size: 0.84rem;
             font-weight: 700;
             margin-bottom: 0.4rem;
+        }
+
+        .leaseguard-brandmark svg,
+        .leaseguard-mode-icon svg,
+        .leaseguard-section-icon svg,
+        .leaseguard-file-chip svg,
+        .leaseguard-toolbar-cluster svg {
+            width: 1.2rem;
+            height: 1.2rem;
+            display: block;
+        }
+
+        .leaseguard-brandmark svg {
+            width: 1.45rem;
+            height: 1.45rem;
+        }
+
+        .leaseguard-mode-icon svg {
+            width: 1.38rem;
+            height: 1.38rem;
+        }
+
+        .leaseguard-section-icon svg {
+            width: 1rem;
+            height: 1rem;
+        }
+
+        .leaseguard-file-chip svg {
+            color: var(--muted);
+            flex: 0 0 auto;
+        }
+
+        .leaseguard-viewer-toolbar-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0 0 0.85rem;
+            border-bottom: 1px solid rgba(217, 227, 240, 0.9);
+            margin-bottom: 0.85rem;
+        }
+
+        .leaseguard-toolbar-cluster {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
+            color: var(--muted);
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .leaseguard-page-indicator {
+            color: var(--ink);
+            font-weight: 700;
+            padding: 0.6rem 0.75rem;
+            text-align: center;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: #f9fbff;
+        }
+
+        div[data-testid="stImage"] img {
+            border-radius: 14px;
         }
 
         @media (max-width: 900px) {
