@@ -56,6 +56,21 @@ def _normalize_spacing(text: str) -> str:
     return cleaned.strip()
 
 
+def _clean_report_text(text: str) -> str:
+    cleaned = _normalize_spacing(text)
+    cutoff_markers = [
+        "What you can do next (practical steps)",
+        "If you'd like, I can draft",
+        "If you'd like, I can produce",
+        "Would you like me to proceed",
+        "Notes on the tools and sources used",
+    ]
+    cut_positions = [cleaned.find(marker) for marker in cutoff_markers if marker in cleaned]
+    if cut_positions:
+        cleaned = cleaned[: min(cut_positions)].rstrip()
+    return cleaned
+
+
 def _mime_type_for_path(path: Path) -> str | None:
     mime_type, _ = guess_type(str(path))
     return mime_type
@@ -319,7 +334,7 @@ def run_sample_pipeline(on_stage: Callable[[str], None] | None = None) -> dict[s
             }
         )
 
-    report = _clean_text(_read_text_best_effort(SAMPLE_REPORT_PATH))
+    report = _clean_report_text(_read_text_best_effort(SAMPLE_REPORT_PATH))
     cleaned_lease_text = build_cleaned_lease_text(findings)
     plain_language_translation = build_plain_language_translation(findings)
     reader_sections = _reader_sections_from_findings(findings)
@@ -405,6 +420,7 @@ def run_live_pipeline(
         plain_language_translation = plain_language_from_findings
 
     source_metadata = _build_source_metadata(Path(file_path))
+    results["report"] = _clean_report_text(str(results.get("report", "")))
     results["cleaned_lease_text"] = cleaned_lease_text
     results["plain_language_translation"] = plain_language_translation
     results["reader_sections"] = reader_sections
