@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import copy
 import hmac
 import importlib.util
@@ -14,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 try:
     from frontend.audit_backend import run_live_pipeline, run_reader_pipeline, run_sample_pipeline
@@ -350,6 +348,22 @@ def _source_mime_type(results: dict[str, Any]) -> str | None:
     return _mime_type_for_name(source_name) if source_name else None
 
 
+@st.cache_data(show_spinner=False)
+def _pdf_preview_image(source_bytes: bytes) -> bytes | None:
+    try:
+        import fitz
+
+        document = fitz.open(stream=source_bytes, filetype="pdf")
+        try:
+            page = document.load_page(0)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
+            return pixmap.tobytes("png")
+        finally:
+            document.close()
+    except Exception:
+        return None
+
+
 def _attach_uploaded_source_metadata(
     results: dict[str, Any],
     source_name: str,
@@ -424,7 +438,14 @@ def _render_review_source_preview(results: dict[str, Any]) -> None:
         return
 
     with st.container(border=True):
-        name_col, action_col = st.columns([5, 1.4])
+        source_bytes = _source_preview_bytes(results)
+        mime_type = _source_mime_type(results)
+        has_download = bool(source_bytes)
+        action_widths = [4.8, 1.5, 1.5] if has_download else [6.3, 1.7]
+        columns = st.columns(action_widths)
+
+        name_col = columns[0]
+        action_col = columns[1]
         with name_col:
             st.markdown(f"**{source_name}**")
         with action_col:
@@ -434,20 +455,21 @@ def _render_review_source_preview(results: dict[str, Any]) -> None:
                 use_container_width=True,
                 on_click=_open_reader_page,
             )
+        if has_download:
+            with columns[2]:
+                st.download_button(
+                    "Download original",
+                    data=source_bytes,
+                    file_name=source_name,
+                    mime=mime_type or "application/octet-stream",
+                    key=f"download_original_{source_name}",
+                    use_container_width=True,
+                )
 
-        mime_type = _source_mime_type(results)
-        source_bytes = _source_preview_bytes(results)
         if mime_type == "application/pdf" and source_bytes:
-            encoded_pdf = base64.b64encode(source_bytes).decode("utf-8")
-            pdf_html = f"""
-            <iframe
-                src="data:application/pdf;base64,{encoded_pdf}#page=1&toolbar=0&navpanes=0&scrollbar=0&view=FitH"
-                width="100%"
-                height="320"
-                style="border:0;border-radius:12px;background:white;"
-            ></iframe>
-            """
-            components.html(pdf_html, height=330)
+            preview_image = _pdf_preview_image(source_bytes)
+            if preview_image:
+                st.image(preview_image, use_container_width=True)
 
 
 def _render_audit_results(results: dict[str, Any], source: str | None) -> None:

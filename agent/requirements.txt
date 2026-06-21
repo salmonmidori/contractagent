@@ -10,6 +10,7 @@ llama-index
 chromadb
 docx2txt
 pypdf
+pymupdf
 pandas
 numpy
 tqdm
