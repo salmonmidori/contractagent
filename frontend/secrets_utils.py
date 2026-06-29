@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,6 +14,17 @@ except ImportError:  # pragma: no cover - streamlit is installed in app environm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROXY_ENV_NAMES = (
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "GIT_HTTP_PROXY",
+    "GIT_HTTPS_PROXY",
+)
+_BLOCKED_LOCAL_PROXY_PATTERN = re.compile(r"^(?:https?://)?(?:127\.0\.0\.1|localhost):9/?$", re.IGNORECASE)
 
 
 def _read_local_secrets(project_root: Path | None = None) -> dict[str, str]:
@@ -37,6 +49,14 @@ def _read_streamlit_secrets() -> dict[str, str]:
         return {key: str(value).strip() for key, value in dict(st.secrets).items()}
     except Exception:
         return {}
+
+
+def prepare_network_env() -> None:
+    """Clear known dead local proxy values that break outbound AI calls."""
+    for name in _PROXY_ENV_NAMES:
+        value = os.environ.get(name, "").strip()
+        if value and _BLOCKED_LOCAL_PROXY_PATTERN.match(value):
+            os.environ.pop(name, None)
 
 
 def get_secret(

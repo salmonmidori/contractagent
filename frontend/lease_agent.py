@@ -12,7 +12,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -40,9 +42,9 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 
 try:
-    from frontend.secrets_utils import get_secret
+    from frontend.secrets_utils import get_secret, prepare_network_env
 except ImportError:
-    from secrets_utils import get_secret
+    from secrets_utils import get_secret, prepare_network_env
 
 # ===================================================================
 # Path resolution
@@ -52,7 +54,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 _DIR_AGENT = _PROJECT_ROOT / "agent"
 _DIR_RAG_DATA = _PROJECT_ROOT / "rag_data"
 _DIR_CHROMADB = _DIR_AGENT / "chromadb"
-_CACHE_FILE = _DIR_AGENT / "agent_cache.json"
+_RUNTIME_ROOT = Path(tempfile.gettempdir()) / "leaseguard_runtime"
+_CACHE_FILE = _RUNTIME_ROOT / "agent_cache.json"
 
 
 # ===================================================================
@@ -62,6 +65,7 @@ _CACHE_FILE = _DIR_AGENT / "agent_cache.json"
 
 def _ensure_api_keys():
     """Push API keys from env, Streamlit secrets, or local secrets.txt into os.environ."""
+    prepare_network_env()
     for key in ("OPENAI_API_KEY", "GEMINI_API_KEY"):
         if key in os.environ and os.environ[key].strip():
             continue
@@ -81,6 +85,8 @@ _llm_with_tools = None
 _query_engine_gold = None
 _query_engine_other = None
 _query_engine_info = None
+_rag_backend = "uninitialised"
+_fallback_corpora = {}
 _tools = []
 _tool_map = {}
 
@@ -88,39 +94,196 @@ _tool_map = {}
 OPENAI_MODEL_ID = "gpt-4o-mini"
 
 
+def _chroma_source_fingerprint() -> str:
+    if not _DIR_CHROMADB.exists() or not any(_DIR_CHROMADB.iterdir()):
+        raise RuntimeError("chroma_index_missing")
+
+    digest = hashlib.sha256()
+    for entry in sorted(_DIR_CHROMADB.rglob("*")):
+        relative = str(entry.relative_to(_DIR_CHROMADB)).replace("\\", "/")
+        digest.update(relative.encode("utf-8"))
+        if entry.is_file():
+            stats = entry.stat()
+            digest.update(str(stats.st_size).encode("utf-8"))
+            digest.update(str(int(stats.st_mtime)).encode("utf-8"))
+    return digest.hexdigest()[:12]
+
+
+@lru_cache(maxsize=1)
+def _runtime_chromadb_path() -> Path:
+    runtime_dir = _RUNTIME_ROOT / f"chromadb_{_chroma_source_fingerprint()}"
+    if not runtime_dir.exists() or not any(runtime_dir.iterdir()):
+        runtime_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(_DIR_CHROMADB, runtime_dir, dirs_exist_ok=True)
+
+    probe_path = runtime_dir / ".leaseguard_write_test"
+    probe_path.write_text("ok", encoding="utf-8")
+    probe_path.unlink(missing_ok=True)
+    return runtime_dir
+
+
+_RAG_DATA_DIRECTORIES = {
+    "gold_standard_leases": _DIR_RAG_DATA / "gold_standard_leases",
+    "other_leases": _DIR_RAG_DATA / "other_leases",
+    "lease_info": _DIR_RAG_DATA / "info",
+}
+
+
+def _reference_text_from_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="latin-1", errors="ignore")
+
+
+def _retrieval_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z]{4,}", text.lower())}
+
+
+@lru_cache(maxsize=1)
+def _load_fallback_corpora() -> dict[str, list[dict[str, Any]]]:
+    splitter = SentenceSplitter(chunk_size=700, chunk_overlap=80)
+    corpora: dict[str, list[dict[str, Any]]] = {}
+
+    for collection_name, directory in _RAG_DATA_DIRECTORIES.items():
+        if not directory.exists():
+            raise RuntimeError(f"missing_rag_data_{collection_name}")
+
+        chunks: list[dict[str, Any]] = []
+        for file_path in sorted(directory.rglob("*")):
+            if not file_path.is_file():
+                continue
+            text = _normalize_prompt_text(_reference_text_from_path(file_path))
+            if not text:
+                continue
+            for chunk in splitter.split_text(text):
+                tokens = _retrieval_tokens(chunk)
+                if not tokens:
+                    continue
+                chunks.append(
+                    {
+                        "source": file_path.name,
+                        "text": chunk[:1400],
+                        "tokens": tokens,
+                    }
+                )
+        corpora[collection_name] = chunks
+
+    return corpora
+
+
+def _lexical_rag_search(chunks: list[dict[str, Any]], query: str, top_k: int = 4, max_chars: int = 3200) -> str:
+    query_text = _normalize_prompt_text(query)
+    query_tokens = _retrieval_tokens(query_text)
+    if not chunks or not query_tokens:
+        return "No relevant reference material found."
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    lowered_query = query_text.lower()
+    for chunk in chunks:
+        overlap = len(query_tokens & chunk["tokens"])
+        if overlap <= 0:
+            continue
+        lowered_chunk = chunk["text"].lower()
+        score = overlap * 8
+        if lowered_query and lowered_query[:120] in lowered_chunk:
+            score += 40
+        score += sum(2 for token in query_tokens if token in lowered_chunk)
+        scored.append((score, chunk))
+
+    if not scored:
+        return "No relevant reference material found."
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    lines: list[str] = []
+    total_chars = 0
+    for _score, chunk in scored[:top_k]:
+        snippet = f"[{chunk['source']}]\n{chunk['text']}"
+        total_chars += len(snippet)
+        if total_chars > max_chars:
+            break
+        lines.append(snippet)
+
+    return "\n\n---\n\n".join(lines) if lines else "No relevant reference material found."
+
+
+@lru_cache(maxsize=1)
+def _resolve_rag_backend() -> tuple[str, str]:
+    _ensure_api_keys()
+
+    try:
+        runtime_dir = _runtime_chromadb_path()
+        chroma_client = chromadb.PersistentClient(path=str(runtime_dir))
+        for collection_name in _RAG_DATA_DIRECTORIES:
+            chroma_client.get_collection(collection_name)
+        return "chroma", ""
+    except RuntimeError as exc:
+        chroma_error = str(exc)
+    except Exception as exc:
+        chroma_error = str(exc).strip() or "chroma_runtime_bootstrap_failed"
+
+    try:
+        corpora = _load_fallback_corpora()
+        if all(corpora.get(name) for name in _RAG_DATA_DIRECTORIES):
+            return "local_fallback", ""
+    except Exception:
+        pass
+
+    return "unavailable", chroma_error or "live_stack_unavailable"
+
+
+@lru_cache(maxsize=1)
+def check_live_audit_ready() -> tuple[bool, str]:
+    backend, error_code = _resolve_rag_backend()
+    if backend in {"chroma", "local_fallback"}:
+        return True, ""
+    return False, error_code or "live_stack_unavailable"
+
+
 def _init_models_and_rag():
     """One-time setup of LLM, embeddings, and RAG query engines."""
     global _initialised, _llm, _llm_with_tools
     global _query_engine_gold, _query_engine_other, _query_engine_info
-    global _tools, _tool_map
+    global _rag_backend, _fallback_corpora, _tools, _tool_map
 
     if _initialised:
         return
 
     _ensure_api_keys()
 
-    # LLM
     _llm = ChatOpenAI(model=OPENAI_MODEL_ID, temperature=0)
 
-    # LlamaIndex settings
     Settings.llm = LlamaIndexOpenAI(model=OPENAI_MODEL_ID)
     Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
 
-    # Load existing ChromaDB collections (built by the notebook)
-    chroma_client = chromadb.PersistentClient(path=str(_DIR_CHROMADB))
+    backend, error_code = _resolve_rag_backend()
+    if backend == "unavailable":
+        raise RuntimeError(error_code or "live_stack_unavailable")
 
-    def _load_index(collection_name):
-        collection = chroma_client.get_or_create_collection(collection_name)
-        vector_store = ChromaVectorStore(chroma_collection=collection)
-        return VectorStoreIndex.from_vector_store(
-            vector_store, embed_model=Settings.embed_model
-        )
+    _rag_backend = backend
+    if backend == "chroma":
+        chroma_client = chromadb.PersistentClient(path=str(_runtime_chromadb_path()))
 
-    _query_engine_gold = _load_index("gold_standard_leases").as_query_engine()
-    _query_engine_other = _load_index("other_leases").as_query_engine()
-    _query_engine_info = _load_index("lease_info").as_query_engine()
+        def _load_index(collection_name):
+            collection = chroma_client.get_collection(collection_name)
+            vector_store = ChromaVectorStore(chroma_collection=collection)
+            return VectorStoreIndex.from_vector_store(
+                vector_store, embed_model=Settings.embed_model
+            )
 
-    # Register tools (defined below at module level)
+        _query_engine_gold = _load_index("gold_standard_leases").as_query_engine()
+        _query_engine_other = _load_index("other_leases").as_query_engine()
+        _query_engine_info = _load_index("lease_info").as_query_engine()
+    else:
+        _fallback_corpora = _load_fallback_corpora()
+
     _tools = [
         retrieve_gold_standard_clauses,
         retrieve_other_lease_examples,
@@ -136,24 +299,35 @@ def _init_models_and_rag():
 # Agent tools
 # ===================================================================
 
+def _query_reference_material(collection_name: str, query: str) -> str:
+    if _rag_backend == "chroma":
+        if collection_name == "gold_standard_leases":
+            return str(_query_engine_gold.query(query))
+        if collection_name == "other_leases":
+            return str(_query_engine_other.query(query))
+        return str(_query_engine_info.query(query))
+
+    return _lexical_rag_search(_fallback_corpora.get(collection_name, []), query)
+
+
 @tool
 def retrieve_gold_standard_clauses(query: str) -> str:
     """Retrieve examples of fair, standard lease language from gold standard
     lease templates for comparison."""
-    return str(_query_engine_gold.query(query))
+    return _query_reference_material("gold_standard_leases", query)
 
 
 @tool
 def retrieve_other_lease_examples(query: str) -> str:
     """Retrieve examples from real-world lease agreements for comparison."""
-    return str(_query_engine_other.query(query))
+    return _query_reference_material("other_leases", query)
 
 
 @tool
 def retrieve_lease_info(query: str) -> str:
     """Retrieve educational information about lease red flags, illegal clauses,
     and best practices for tenants."""
-    return str(_query_engine_info.query(query))
+    return _query_reference_material("lease_info", query)
 
 
 ALLOWED_DOMAINS = [
@@ -195,6 +369,7 @@ DOMAIN_URL_PATTERNS = {
 
 
 def _fetch_page_text(url, max_chars=3000):
+    prepare_network_env()
     try:
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         if resp.status_code != 200:
@@ -239,13 +414,17 @@ def search_legal_web(query: str, state: str = "") -> str:
 # ===================================================================
 
 def _load_cache() -> dict:
-    if _CACHE_FILE.exists():
-        return json.loads(_CACHE_FILE.read_text())
-    return {}
+    if not _CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _save_cache(cache: dict):
-    _CACHE_FILE.write_text(json.dumps(cache, indent=2))
+    _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _CACHE_FILE.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
 def _cache_key(stage_name: str, content_hash: str) -> str:
